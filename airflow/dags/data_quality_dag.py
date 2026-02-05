@@ -1,6 +1,6 @@
 """
-Airflow DAG for orchestrating real-time data quality pipeline
-Runs Spark jobs on GCP and Databricks for data quality monitoring
+Airflow DAG for running our data quality pipeline
+This handles spinning up clusters, running Spark jobs, and cleaning up after
 """
 
 from datetime import datetime, timedelta
@@ -15,150 +15,131 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.email import EmailOperator
 from airflow.utils.dates import days_ago
 
-# Default arguments
+# These are the default settings for all tasks
 default_args = {
     'owner': 'data-engineering',
-    'depends_on_past': False,
+    'depends_on_past': False,  # Each run is independent
     'email': ['alerts@company.com'],
-    'email_on_failure': True,
+    'email_on_failure': True,  # Only bug us if something breaks
     'email_on_retry': False,
-    'retries': 2,
+    'retries': 2,  # Try twice before giving up
     'retry_delay': timedelta(minutes=5),
     'start_date': days_ago(1),
 }
 
-# DAG definition
+# Setting up the DAG
 dag = DAG(
     'realtime_data_quality_pipeline',
     default_args=default_args,
-    description='End-to-end data quality monitoring with Spark on GCP/Databricks',
-    schedule_interval='@hourly',
-    catchup=False,
-    tags=['data-quality', 'spark', 'realtime'],
+    description='Data quality checks running on Spark with GCP/Databricks',
+    schedule_interval='@hourly',  # Runs every hour
+    catchup=False,  # Don't backfill old runs
+    tags=['data-quality', 'spark', 'gcp'],
 )
 
-# GCP Configuration
-GCP_PROJECT_ID = 'your-gcp-project-id'
+# GCP project settings - change these to match your setup
+GCP_PROJECT_ID = 'your-project-id'
 GCP_REGION = 'us-central1'
-CLUSTER_NAME = 'data-quality-cluster'
-GCS_BUCKET = 'your-gcs-bucket'
+CLUSTER_NAME = 'dq-cluster-{{ ds_nodash }}'
+BUCKET_NAME = 'your-bucket-name'
 
-# Databricks Configuration
-DATABRICKS_CONN_ID = 'databricks_default'
-NOTEBOOK_PATH = '/Workspace/data_quality/processor'
+# Cluster specs - this should be enough for most workloads
+CLUSTER_CONFIG = {
+    'master_config': {
+        'num_instances': 1,
+        'machine_type_uri': 'n1-standard-4',
+        'disk_config': {'boot_disk_type': 'pd-standard', 'boot_disk_size_gb': 512},
+    },
+    'worker_config': {
+        'num_instances': 2,
+        'machine_type_uri': 'n1-standard-4',
+        'disk_config': {'boot_disk_type': 'pd-standard', 'boot_disk_size_gb': 512},
+    },
+}
 
-def validate_data_sources(**context):
-    """Validate that source data is available before processing"""
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("Validating data sources...")
-    # Add validation logic here
+# Task 1: Validate the source data exists
+def check_source_data(**context):
+    # Just a simple check for now, can make this more sophisticated later
+    print("Checking if source data is available...")
+    # Add your validation logic here
     return True
 
-def send_quality_metrics(**context):
-    """Send quality metrics to monitoring system"""
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("Sending quality metrics to monitoring dashboard...")
-    # Add metrics reporting logic
-    return True
-
-# Task 1: Validate data sources
 validate_sources = PythonOperator(
-    task_id='validate_data_sources',
-    python_callable=validate_data_sources,
+    task_id='validate_sources',
+    python_callable=check_source_data,
     dag=dag,
 )
 
-# Task 2: Create GCP Dataproc cluster
+# Task 2: Spin up the GCP Dataproc cluster
 create_cluster = DataprocCreateClusterOperator(
     task_id='create_dataproc_cluster',
     project_id=GCP_PROJECT_ID,
+    cluster_config=CLUSTER_CONFIG,
     region=GCP_REGION,
     cluster_name=CLUSTER_NAME,
-    cluster_config={
-        'master_config': {
-            'num_instances': 1,
-            'machine_type_uri': 'n1-standard-4',
-            'disk_config': {
-                'boot_disk_size_gb': 500,
-            }
-        },
-        'worker_config': {
-            'num_instances': 2,
-            'machine_type_uri': 'n1-standard-4',
-            'disk_config': {
-                'boot_disk_size_gb': 500,
-            }
-        },
-    },
     dag=dag,
 )
 
-# Task 3: Submit Spark job to GCP Dataproc
+# Task 3: Run the actual Spark quality checks
 run_spark_quality_check = DataprocSubmitPySparkJobOperator(
-    task_id='run_spark_data_quality',
-    project_id=GCP_PROJECT_ID,
-    region=GCP_REGION,
+    task_id='run_spark_quality_check',
+    main='gs://{{ params.bucket }}/spark_jobs/data_quality_processor.py',
     cluster_name=CLUSTER_NAME,
-    main=f'gs://{GCS_BUCKET}/spark_jobs/data_quality_processor.py',
+    region=GCP_REGION,
+    project_id=GCP_PROJECT_ID,
+    dataproc_jars=[
+        'gs://spark-lib/bigquery/spark-bigquery-latest_2.12.jar'
+    ],
     arguments=[
-        f'--input=gs://{GCS_BUCKET}/raw-data/',
-        f'--output=gs://{GCS_BUCKET}/quality-checked-data/',
-        f'--checkpoint=gs://{GCS_BUCKET}/checkpoints/',
+        '--input-path', 'gs://{{ params.bucket }}/input/',
+        '--output-path', 'gs://{{ params.bucket }}/output/',
+        '--config-path', 'gs://{{ params.bucket }}/config/config.yaml',
     ],
     dag=dag,
 )
 
-# Task 4: Run Databricks notebook (alternative to GCP)
-run_databricks_job = DatabricksSubmitRunOperator(
-    task_id='run_databricks_quality_check',
-    databricks_conn_id=DATABRICKS_CONN_ID,
-    notebook_task={
-        'notebook_path': NOTEBOOK_PATH,
-        'base_parameters': {
-            'input_path': 'dbfs:/raw-data/',
-            'output_path': 'dbfs:/quality-checked-data/',
-        }
-    },
-    new_cluster={
-        'spark_version': '11.3.x-scala2.12',
-        'node_type_id': 'i3.xlarge',
-        'num_workers': 2,
-        'spark_conf': {
-            'spark.speculation': True,
-        },
-    },
+# Task 4: Quick validation to make sure output looks good
+def verify_output(**context):
+    # Check if the quality metrics were actually generated
+    print("Verifying output files exist...")
+    # Add your checks here
+    return True
+
+validate_output = PythonOperator(
+    task_id='validate_output',
+    python_callable=verify_output,
     dag=dag,
 )
 
-# Task 5: Send quality metrics
+# Task 5: Report the metrics
 send_metrics = PythonOperator(
     task_id='send_quality_metrics',
     python_callable=send_quality_metrics,
     dag=dag,
 )
 
-# Task 6: Delete GCP cluster
+# Task 6: Clean up - delete the cluster to save money
 delete_cluster = DataprocDeleteClusterOperator(
     task_id='delete_dataproc_cluster',
     project_id=GCP_PROJECT_ID,
     region=GCP_REGION,
     cluster_name=CLUSTER_NAME,
-    trigger_rule='all_done',  # Run even if upstream fails
+    trigger_rule='all_done',  # Always delete, even if job failed
     dag=dag,
 )
 
-# Task 7: Send success notification
+# Task 7: Send success email
 send_success_email = EmailOperator(
     task_id='send_success_notification',
     to='team@company.com',
     subject='Data Quality Pipeline Success - {{ ds }}',
-    html_content='<p>Data quality pipeline completed successfully.</p>',
+    html_content='<p>The data quality pipeline ran successfully!</p>',
     dag=dag,
 )
 
-# Define task dependencies
+# How the tasks flow - one after another
+# This runs with GCP Dataproc
 validate_sources >> create_cluster >> run_spark_quality_check >> send_metrics >> delete_cluster >> send_success_email
-# Alternative path using Databricks (comment out GCP path if using this)
+
+# If you want to use Databricks instead, use this:
 # validate_sources >> run_databricks_job >> send_metrics >> send_success_email
