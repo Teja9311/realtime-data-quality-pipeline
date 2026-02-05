@@ -1,0 +1,62 @@
+# Configuration for Real-time Data Quality Pipeline
+
+gcp:
+  project_id: "your-gcp-project-id"
+  region: "us-central1"
+  bucket: "your-gcs-bucket"
+  dataproc:
+    cluster_name: "data-quality-cluster"
+    master_machine_type: "n1-standard-4"
+    worker_machine_type: "n1-standard-4"
+    num_workers: 2
+    disk_size_gb: 500
+
+databricks:
+  workspace_url: "https://your-workspace.databricks.com"
+  cluster:
+    spark_version: "11.3.x-scala2.12"
+    node_type_id: "i3.xlarge"
+    num_workers: 2
+    autoscale:
+      min_workers: 1
+      max_workers: 4
+  notebook_path: "/Workspace/data_quality/processor"
+
+data_sources:
+  raw_data_path: "gs://your-bucket/raw-data/"
+  checkpoint_path: "gs://your-bucket/checkpoints/"
+  output_path: "gs://your-bucket/quality-checked-data/"
+
+data_quality_rules:
+  value_range:
+    min: 0
+    max: 1000
+  null_tolerance: 0.05  # 5% null tolerance
+  anomaly_thresholds:
+    high: 800
+    medium: 600
+    low: 400
+  z_score_threshold: 3.0
+
+spark:
+  app_name: "DataQualityPipeline"
+  config:
+    spark.sql.streaming.checkpointLocation: "/tmp/checkpoint"
+    spark.streaming.stopGracefullyOnShutdown: true
+    spark.sql.adaptive.enabled: true
+
+airflow:
+  schedule_interval: "@hourly"
+  catchup: false
+  email_on_failure: true
+  email: ["alerts@company.com"]
+  retries: 2
+  retry_delay_minutes: 5
+
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
