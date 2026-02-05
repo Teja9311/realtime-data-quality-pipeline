@@ -3,7 +3,6 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PySpark](https://img.shields.io/badge/PySpark-3.5.0-orange.svg)](https://spark.apache.org/)
 [![Airflow](https://img.shields.io/badge/Airflow-2.8.0-blue.svg)](https://airflow.apache.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A production-ready data quality monitoring and anomaly detection pipeline built with **Apache Spark**, **GCP**, **Databricks**, **Python**, and **Apache Airflow**. This project demonstrates modern data engineering practices for real-time data quality assurance.
 
