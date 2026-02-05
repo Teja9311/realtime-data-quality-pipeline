@@ -1,6 +1,7 @@
 # Configuration for Real-time Data Quality Pipeline
 
 gcp:
+  # GCP project configuration - update these values to match your environment
   project_id: "your-gcp-project-id"
   region: "us-central1"
   bucket: "your-gcs-bucket"
