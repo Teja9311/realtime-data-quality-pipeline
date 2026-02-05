@@ -1,6 +1,6 @@
 """
 Data Quality Processor using PySpark
-Processes streaming data and performs quality checks on GCP/Databricks
+Processing streaming data and checking quality on GCP/Databricks
 """
 
 from pyspark.sql import SparkSession
@@ -13,16 +13,16 @@ logger = logging.getLogger(__name__)
 
 class DataQualityProcessor:
     def __init__(self, app_name="DataQualityPipeline"):
-        """Initialize Spark session for data quality processing"""
+        """Setting up the Spark session - needed to run everything"""
         self.spark = SparkSession.builder \
             .appName(app_name) \
             .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoint") \
             .getOrCreate()
         
-        logger.info(f"Initialized {app_name} Spark session")
+        logger.info(f"Started {app_name} Spark session")
     
     def define_schema(self):
-        """Define schema for incoming streaming data"""
+        """Here's what our data looks like - defining the structure"""
         return StructType([
             StructField("id", StringType(), False),
             StructField("timestamp", TimestampType(), False),
@@ -33,7 +33,7 @@ class DataQualityProcessor:
         ])
     
     def read_from_gcs(self, bucket_path):
-        """Read streaming data from Google Cloud Storage"""
+        """Reading data from Google Cloud Storage as it comes in"""
         schema = self.define_schema()
         
         df = self.spark.readStream \
@@ -46,15 +46,15 @@ class DataQualityProcessor:
         return df
     
     def apply_quality_checks(self, df):
-        """Apply data quality rules and validations"""
-        # Add data quality flags
+        """Checking if the data looks good - adding flags for bad data"""
+        # Mark rows as valid or invalid based on our rules
         quality_df = df.withColumn(
             "is_valid",
             when(
                 (col("value").isNotNull()) &
                 (col("sensor_id").isNotNull()) &
                 (col("value") >= 0) &
-                (col("value") <= 1000), # Business rule: value range
+                (col("value") <= 1000), # Values should be between 0-1000
                 True
             ).otherwise(False)
         ).withColumn(
@@ -62,35 +62,38 @@ class DataQualityProcessor:
             current_timestamp()
         ).withColumn(
             "anomaly_score",
-            when(col("value") > 800, 3.0)  # High anomaly
-            .when(col("value") > 600, 2.0)  # Medium anomaly
-            .when(col("value") > 400, 1.0)  # Low anomaly
-            .otherwise(0.0)  # Normal
+            # Scoring how weird the values are
+            when(col("value") > 800, 3.0)  # Really high - potential issue
+            .when(col("value") > 600, 2.0)  # Kinda high
+            .when(col("value") > 400, 1.0)  # Slightly elevated
+            .otherwise(0.0)  # Looks normal
         )
         
-        logger.info("Applied data quality checks")
+        logger.info("Applied quality checks to data")
         return quality_df
     
     def detect_anomalies(self, df):
-        """Detect statistical anomalies using z-score method"""
+        """Finding outliers using z-score - basically checking what's too far from normal"""
+        # Calculate mean and standard deviation for each sensor
         stats = df.groupBy("sensor_id").agg(
             avg("value").alias("mean_value"),
             stddev("value").alias("stddev_value")
         )
         
+        # Join with original data and calculate z-score
         anomaly_df = df.join(stats, "sensor_id").withColumn(
             "z_score",
             (col("value") - col("mean_value")) / col("stddev_value")
         ).withColumn(
             "is_anomaly",
-            when(abs(col("z_score")) > 3, True).otherwise(False)
+            when(abs(col("z_score")) > 3, True).otherwise(False)  # 3 standard deviations = anomaly
         )
         
-        logger.info("Anomaly detection completed")
+        logger.info("Anomaly detection done")
         return anomaly_df
     
     def write_to_databricks_delta(self, df, table_name, checkpoint_path):
-        """Write processed data to Databricks Delta Lake"""
+        """Saving the processed data to Databricks Delta Lake"""
         query = df.writeStream \
             .format("delta") \
             .outputMode("append") \
@@ -101,7 +104,7 @@ class DataQualityProcessor:
         return query
     
     def write_to_gcs_parquet(self, df, output_path, checkpoint_path):
-        """Write processed data to GCS in Parquet format"""
+        """Saving the data to GCS in Parquet format - good for compression"""
         query = df.writeStream \
             .format("parquet") \
             .outputMode("append") \
@@ -113,28 +116,29 @@ class DataQualityProcessor:
         return query
     
     def run_quality_pipeline(self, input_path, output_path, checkpoint_path):
-        """Execute end-to-end data quality pipeline"""
-        logger.info("Starting data quality pipeline")
+        """Main function that ties everything together"""
+        logger.info("Starting the data quality pipeline")
         
-        # Read streaming data
+        # Step 1: Read the incoming data
         raw_df = self.read_from_gcs(input_path)
         
-        # Apply quality checks
+        # Step 2: Run quality checks
         quality_df = self.apply_quality_checks(raw_df)
         
-        # Write to output
+        # Step 3: Save the results
         query = self.write_to_gcs_parquet(quality_df, output_path, checkpoint_path)
         
-        logger.info("Data quality pipeline started successfully")
+        logger.info("Pipeline is now running!")
         return query
 
 if __name__ == "__main__":
-    # Example usage
+    # This runs when you execute the file directly
     processor = DataQualityProcessor()
     
+    # TODO: Replace these with your actual bucket paths
     input_path = "gs://your-bucket/raw-data/"
     output_path = "gs://your-bucket/quality-checked-data/"
     checkpoint_path = "gs://your-bucket/checkpoints/quality-pipeline/"
     
     query = processor.run_quality_pipeline(input_path, output_path, checkpoint_path)
-    query.awaitTermination()
+    query.awaitTermination()  # Keeps the job running until manually stopped
